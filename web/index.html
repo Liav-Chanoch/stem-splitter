@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stem Splitter</title>
+<meta name="description" content="Split a song into drums, bass, guitar, piano, vocals and synth. Runs entirely in your browser.">
+<style>
+ :root { color-scheme: dark; }
+ * { box-sizing: border-box; }
+ body { margin:0; font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+        background:#14110f; color:#f2ece4; display:flex; justify-content:center;
+        padding:40px 20px 80px; }
+ main { width:100%; max-width:660px; }
+ h1 { font-size:21px; margin:0 0 3px; letter-spacing:.02em; }
+ p.sub { margin:0 0 26px; color:#9a8f83; font-size:12.5px; }
+ .card { border:1px solid #332b25; border-radius:13px; background:#1b1714;
+         padding:18px; margin-bottom:16px; }
+ .card.off { opacity:.4; pointer-events:none; }
+ h2 { font-size:11px; letter-spacing:.13em; text-transform:uppercase;
+      color:#9a8f83; margin:0 0 13px; font-weight:600; }
+ #drop { border:1.5px dashed #4a4038; border-radius:11px; padding:38px 20px;
+         text-align:center; color:#9a8f83; cursor:pointer; transition:.15s; }
+ #drop.over { border-color:#c8a06a; color:#e8d8bf; background:#221c17; }
+ canvas { width:100%; height:74px; display:block; border-radius:8px;
+          background:#100d0b; margin-top:14px; }
+ .transport { display:flex; align-items:center; gap:11px; margin-top:11px; flex-wrap:wrap; }
+ button { padding:7px 13px; border-radius:8px; border:1px solid #4a4038;
+          background:#2a2320; color:#f2ece4; font-size:13px; cursor:pointer;
+          font-family:inherit; }
+ button:hover:not(:disabled) { background:#362c26; border-color:#5d5046; }
+ button:disabled { opacity:.4; cursor:default; }
+ button.primary { background:#c8a06a; border-color:#c8a06a; color:#231a12; font-weight:600; }
+ #prompt { width:100%; padding:11px 13px; border-radius:9px; background:#100d0b;
+           border:1px solid #3a322c; color:#f2ece4; font-size:14px; font-family:inherit; }
+ #prompt:focus { outline:none; border-color:#c8a06a; }
+ #prompt::placeholder { color:#6b6259; }
+ .reading { font-size:12.5px; color:#c8a06a; margin-top:9px; }
+ .reading.miss { color:#e08a7a; }
+ .rule { display:flex; align-items:center; gap:11px; margin:17px 0 13px;
+         color:#6b6259; font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; }
+ .rule::before, .rule::after { content:""; flex:1; height:1px; background:#2c2521; }
+ .stemlist { display:flex; flex-wrap:wrap; gap:7px; }
+ .chip { padding:6px 11px; font-size:12.5px; border:1px solid #3a322c; border-radius:999px;
+         background:#100d0b; color:#cfc4b6; cursor:pointer; user-select:none; }
+ .chip.on { border-color:#c8a06a; background:#2a2016; color:#e8d8bf; }
+ .hint { color:#7d7368; font-size:11.5px; margin-top:10px; }
+ .bar { height:5px; border-radius:4px; background:#2c2521; overflow:hidden; margin-top:12px; }
+ .bar > i { display:block; height:100%; width:40%; background:#c8a06a;
+            animation:slide 1.4s ease-in-out infinite; }
+ @keyframes slide { 0%{margin-left:-40%} 100%{margin-left:100%} }
+ .mixrow { display:flex; align-items:center; gap:9px; padding:6px 0; }
+ .mixrow .nm { width:112px; font-size:12.5px; color:#cfc4b6; text-transform:capitalize; }
+ .mixrow input[type=range] { flex:1; accent-color:#c8a06a; min-width:80px; }
+ .tog { padding:3px 9px; font-size:11px; border-radius:6px; }
+ .tog.on { background:#c8a06a; border-color:#c8a06a; color:#231a12; font-weight:600; }
+ .err { color:#e08a7a; }
+ footer { color:#6b6259; font-size:11.5px; margin-top:26px; line-height:1.7; }
+ footer a { color:#9a8f83; }
+ @media (max-width:560px) {
+   body { padding:22px 13px 60px; }
+   .card { padding:14px; }
+   .mixrow { display:grid; grid-template-columns:1fr auto auto auto; gap:8px 9px;
+             border-bottom:1px solid #241e1a; }
+   .mixrow .nm { width:auto; }
+   .mixrow input[type=range] { grid-column:1 / -1; }
+ }
+</style>
+</head>
+<body>
+<main>
+ <h1>Stem Splitter</h1>
+ <p class="sub">Splits a song into its parts. Runs entirely in this tab — your music is never uploaded.</p>
+
+ <div class="card">
+  <div id="drop">Drop a song here, or click to choose</div>
+  <input id="file" type="file" accept="audio/*,.wav,.aiff,.aif,.mp3,.flac,.m4a" hidden>
+  <div id="loaded" hidden>
+   <canvas id="wave"></canvas>
+   <div class="transport"><span class="hint" id="name" style="margin-top:0"></span></div>
+  </div>
+ </div>
+
+ <div class="card off" id="setup">
+  <h2>What to pull apart</h2>
+  <input id="prompt" type="text" autocomplete="off" spellcheck="false"
+         placeholder="say it in words &mdash; &ldquo;take out the vocals&rdquo;">
+  <div class="reading" id="reading"></div>
+  <div class="rule"><span>or pick by hand</span></div>
+  <div class="stemlist" id="stems"></div>
+  <div class="hint" id="pickhint"></div>
+ </div>
+
+ <div class="card off" id="runcard">
+  <h2>Separate</h2>
+  <button id="run" class="primary">Split this song</button>
+  <div class="bar" id="bar" hidden><i></i></div>
+  <div class="hint" id="status"></div>
+  <div id="results" style="margin-top:14px"></div>
+ </div>
+
+ <footer>
+  Powered by <a href="https://github.com/facebookresearch/demucs">Demucs v4</a>
+  (htdemucs_6s) via <a href="https://github.com/sevagh/demucs.cpp">demucs.cpp</a>
+  compiled to WebAssembly. Both MIT.
+  The model is about 52MB and is cached after the first visit.
+ </footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

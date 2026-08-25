@@ -1,0 +1,12 @@
+# build scratch
+build-wasm/
+emsdk/
+node_modules/
+
+# secrets, never
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*-service-account*.json
