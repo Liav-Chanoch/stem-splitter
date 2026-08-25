@@ -52,7 +52,7 @@ Weights are converted from the Demucs checkpoint that `demucs` downloads:
 ```bash
 python build/convert_weights.py \
   ~/.cache/huggingface/hub/models--adefossez--HTDemucs-6s/snapshots/*/5c90dfd2.safetensors \
-  web/models/ggml-model-htdemucs-6s-f16.bin --kind 6s
+  docs/models/ggml-model-htdemucs-6s-f16.bin --kind 6s
 ```
 
 Building the WASM needs the Emscripten SDK and demucs.cpp. Three changes to
