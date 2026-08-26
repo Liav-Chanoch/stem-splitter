@@ -6,6 +6,8 @@ and played back inside the tab, and never leaves the machine it is opened on.
 
 Live at **https://liav-chanoch.github.io/stem-splitter/**
 
+No server, no account, no upload: the page does the work.
+
 ## What it does
 
 - **Say it in words.** "take out the vocals", "just the bass", "instrumental".
@@ -33,12 +35,28 @@ immediately and work offline.
 ## Speed, honestly
 
 WebAssembly is much slower than a native GPU. Measured on an M-series MacBook
-Air: 20 seconds of audio took 142 seconds, so roughly **7x slower than real
-time**. A 4 minute song is about half an hour, and the tab has to stay open.
+Air with 20 seconds of audio:
 
-The build is single threaded. Threads would help a lot, but they need
-SharedArrayBuffer, which needs COOP/COEP headers, which GitHub Pages cannot
-set; the usual way around that is a service worker that injects them.
+| | Time | vs real time |
+| --- | --- | --- |
+| One worker | 142s | 7.1x slower |
+| Four workers | 65s | 3.2x slower |
+
+So a 4 minute song lands around 12 minutes, and the tab has to stay open.
+
+The parallelism does not need SharedArrayBuffer, and therefore does not need
+the COOP/COEP headers that GitHub Pages cannot set. Instead of threads sharing
+one module, the song is cut into one slice per worker and each worker runs its
+own WASM instance, following demucs.cpp's `threaded_inference.hpp`. The cost is
+one copy of the weights per worker, which is why the worker count is capped by
+`deviceMemory` as well as by core count.
+
+Slices are padded with 0.75s of their neighbours and recombined with a
+crossfade. demucs.cpp's own ramp spans a different width to the shared region,
+which steps the blend ratio at each join; this uses complementary ramps over
+the full shared span, so the weights always sum to one and no seam is audible.
+Verified: the largest sample-to-sample jump at a join is smaller than the
+largest jump elsewhere in every stem.
 
 If that matters, the companion local tool runs the same model on the Mac's GPU
 at about 4x *faster* than real time, and also splits drums into kick, snare,
