@@ -97,6 +97,7 @@ const $ = (id) => document.getElementById(id);
 const touch = matchMedia("(hover: none)").matches;
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 let ctx, buffer, picked = new Set(), fromPrompt = false, mixer = null, result = null;
+let songName = "song";
 const audio = () => (ctx ||= new (window.AudioContext || window.webkitAudioContext)());
 const THREADS = workerCount();
 
@@ -123,6 +124,7 @@ async function load(file) {
     return;
   }
   $("drop").textContent = touch ? "Choose a different song" : "Drop another song to start over";
+  songName = file.name.replace(/\.[^.]+$/, "");
   $("name").textContent = `${file.name} · ${fmt(buffer.duration)}`;
   $("loaded").hidden = false;
   ["step2", "step3"].forEach((s) => $(s).classList.remove("off"));
@@ -299,9 +301,11 @@ function renderResults() {
   head.style.marginBottom = "6px";
   const play = document.createElement("button");
   play.className = "primary"; play.textContent = "▶ Play together";
+  const saveMix = document.createElement("button");
+  saveMix.textContent = "Save this mix"; saveMix.style.marginLeft = "8px";
   const saveAll = document.createElement("button");
-  saveAll.textContent = "Save all"; saveAll.style.marginLeft = "8px";
-  head.append(play, saveAll); wrap.appendChild(head);
+  saveAll.textContent = "Save every stem"; saveAll.style.marginLeft = "8px";
+  head.append(play, saveMix, saveAll); wrap.appendChild(head);
 
   mixer = { tracks: [], nodes: [], playing: false, button: play };
 
@@ -325,8 +329,19 @@ function renderResults() {
     const gain = audio().createGain(); gain.connect(audio().destination);
     const track = { name, buf, gain, vol, muted: overlaps, soloed: false, chans };
     if (overlaps) mute.classList.add("on");
-    mute.onclick = () => { track.muted = !track.muted; mute.classList.toggle("on"); gains(); };
-    solo.onclick = () => { track.soloed = !track.soloed; solo.classList.toggle("on"); gains(); };
+    mute.onclick = () => {
+      track.muted = !track.muted;
+      mute.classList.toggle("on", track.muted);
+      gains();
+    };
+    solo.onclick = () => {
+      track.soloed = !track.soloed;
+      solo.classList.toggle("on", track.soloed);
+      // Soloing a muted track would otherwise give silence, which reads as a
+      // bug rather than a choice.
+      if (track.soloed && track.muted) { track.muted = false; mute.classList.remove("on"); }
+      gains();
+    };
     vol.oninput = gains;
     save.onclick = () => download(name, chans);
     mixer.tracks.push(track);
@@ -334,6 +349,40 @@ function renderResults() {
 
   saveAll.onclick = () => result.files.forEach(([name, chans], i) =>
     setTimeout(() => download(name, chans), i * 350));
+
+  saveMix.onclick = () => {
+    // Exactly what the faders are currently playing: same gains, same rules.
+    const anySolo = mixer.tracks.some((t) => t.soloed);
+    const live = mixer.tracks.filter((t) => (anySolo ? t.soloed : true) && !t.muted);
+    if (!live.length) {
+      $("status").className = "status err";
+      $("status").textContent = "Everything is muted — nothing to save.";
+      return;
+    }
+    const n = result.n;
+    const out = [new Float32Array(n), new Float32Array(n)];
+    live.forEach((t) => {
+      const g = parseFloat(t.vol.value);
+      for (let c = 0; c < 2; c++) {
+        const src = t.chans[c];
+        for (let i = 0; i < n; i++) out[c][i] += src[i] * g;
+      }
+    });
+    let peak = 0;
+    for (let c = 0; c < 2; c++) for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(out[c][i]));
+    // A sum of stems can go past full scale; turn it down rather than clip it.
+    let note = "";
+    if (peak > 1) {
+      const trim = 1 / peak;
+      for (let c = 0; c < 2; c++) for (let i = 0; i < n; i++) out[c][i] *= trim;
+      const cut = -20 * Math.log10(trim);      // a positive number of dB removed
+      if (cut >= 0.1) note = `, turned down ${cut.toFixed(1)} dB so it would not clip`;
+    }
+    download(`${songName} - mix`, out);
+    $("status").className = "status";
+    $("status").textContent =
+      `Saved your mix: ${live.map((t) => label(t.name)).join(", ")}${note}.`;
+  };
 
   play.onclick = () => {
     audio().resume();

@@ -19,6 +19,9 @@ No server, no account, no upload: the page does the work.
 - **Residual.** What the model could not place in any stem is kept rather than
   discarded. Stems alone do not add back up to the song; stems plus residual do.
 - **Mixer.** Every result gets a fader, mute, solo and its own save button.
+- **Save the mix you made.** *Save this mix* bounces exactly what the faders
+  are playing — mutes, solos and levels included — to a single file, turning it
+  down if the sum would clip. *Save every stem* writes them all separately.
 
 ## Stack
 
