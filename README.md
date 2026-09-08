@@ -54,7 +54,14 @@ own WASM instance, following demucs.cpp's `threaded_inference.hpp`. The cost is
 one copy of the weights per worker, which is why the worker count is capped by
 `deviceMemory` as well as by core count.
 
-Slices are padded with 0.75s of their neighbours and recombined with a
+The song is cut into 30 second chunks fed to a pool of persistent workers,
+rather than one long slice each. A slice of a long song runs for minutes
+before it can report anything, which looks identical to a hang, and holds its
+whole inference in memory at once. Chunks report continuously and keep peak
+memory flat. Progress comes from the WASM module's own callback, so the bar
+moves during a chunk rather than only between them.
+
+Chunks are padded with 0.75s of their neighbours and recombined with a
 crossfade. demucs.cpp's own ramp spans a different width to the shared region,
 which steps the blend ratio at each join; this uses complementary ramps over
 the full shared span, so the weights always sum to one and no seam is audible.

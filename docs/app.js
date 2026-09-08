@@ -225,9 +225,9 @@ $("run").onclick = async () => {
   stopMix();
   $("run").disabled = true;
   $("bar").hidden = false;
-  $("bar").querySelector("i").style.width = "4%";
   $("status").className = "status";
   $("status").textContent = "getting the model ready…";
+  $("bar").querySelector("i").style.width = "2%";
   $("step3").scrollIntoView({ behavior: "smooth", block: "start" });
 
   const left = new Float32Array(buffer.getChannelData(0));
@@ -239,10 +239,16 @@ $("run").onclick = async () => {
     const stems = await separate(left, right, buffer.sampleRate, {
       workers: THREADS,
       onProgress: (p) => {
-        if (p.loaded) { $("status").textContent = "separating…"; return; }
-        const pct = Math.round((p.done / p.of) * 100);
-        $("bar").querySelector("i").style.width = `${Math.max(6, pct)}%`;
-        $("status").textContent = `separating… ${pct}%`;
+        if (p.fraction === undefined) return;
+        const pct = p.fraction * 100;
+        $("bar").querySelector("i").style.width = `${Math.max(2, pct).toFixed(1)}%`;
+        const elapsed = (Date.now() - started) / 1000;
+        // Only guess at a finish time once there is enough progress for the
+        // guess to be worth anything.
+        const left = p.fraction > 0.04
+          ? `, about ${fmt((elapsed / p.fraction) - elapsed)} left` : "";
+        $("status").textContent =
+          `separating… ${pct.toFixed(0)}% (part ${Math.min(p.done + 1, p.of)} of ${p.of})${left}`;
       },
     });
     finished(stems, ((Date.now() - started) / 1000));

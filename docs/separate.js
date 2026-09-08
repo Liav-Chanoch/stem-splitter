@@ -1,11 +1,17 @@
 /* Splitting the song across several workers, and putting it back together.
  *
- * Ported from demucs.cpp's threaded_inference.hpp: each worker gets a slice
- * padded by 0.75s of its neighbours, and the slices are recombined with a
- * triangular ramp across those overlaps so no seam is audible.
+ * The song is cut into chunks of a bounded length, padded with 0.75s of their
+ * neighbours, and handed to a small pool of workers that each keep one WASM
+ * instance loaded. Chunks are recombined with complementary crossfades across
+ * the padded region, so the weights always sum to one and no seam is audible.
+ *
+ * Bounded chunks rather than one slice per worker: a slice of a long song
+ * takes minutes before it reports anything and holds its whole inference in
+ * memory, whereas chunks report often and keep peak memory flat.
  */
 
 const OVERLAP_SECONDS = 0.75;
+const CHUNK_SECONDS = 30;
 const STEM_NAMES = ["drums", "bass", "other", "vocals", "guitar", "piano"];
 
 export function workerCount() {
@@ -18,10 +24,9 @@ export function workerCount() {
 
 function padded(channel, start, end, overlap) {
   const out = new Float32Array(end - start + 2 * overlap);
-  const total = channel.length;
+  const last = channel.length - 1;
   for (let i = 0; i < out.length; i++) {
-    const src = start - overlap + i;
-    out[i] = channel[Math.max(0, Math.min(total - 1, src))];  // clamp at the edges
+    out[i] = channel[Math.max(0, Math.min(last, start - overlap + i))];  // clamp at edges
   }
   return out;
 }
@@ -29,24 +34,15 @@ function padded(channel, start, end, overlap) {
 export function separate(left, right, rate, { workers, onProgress }) {
   const total = left.length;
   const overlap = Math.floor(rate * OVERLAP_SECONDS);
-  const count = Math.max(1, workers);
-  const segLen = Math.ceil(total / count);
+  const chunkLen = Math.max(rate * 5, Math.floor(rate * CHUNK_SECONDS));
 
-  const jobs = [];
-  for (let i = 0; i < count; i++) {
-    const start = i * segLen;
-    const end = Math.min(total, start + segLen);
-    if (start >= end) continue;
-    jobs.push({ index: i, start, end,
-                left: padded(left, start, end, overlap),
-                right: padded(right, start, end, overlap) });
+  const chunks = [];
+  for (let start = 0; start < total; start += chunkLen) {
+    const end = Math.min(total, start + chunkLen);
+    chunks.push({ index: chunks.length, start, end });
   }
+  const poolSize = Math.max(1, Math.min(workers, chunks.length));
 
-  // Neighbouring segments share exactly 2*overlap samples, so fade each one in
-  // and out across that whole shared span. The two ramps are then complementary
-  // and sum to 1 at every sample, which keeps the blend ratio continuous.
-  // demucs.cpp ramps over a different span, which steps the ratio abruptly at
-  // the join and leaves a click there.
   const fade = 2 * overlap;
   const weightAt = (j, length, isFirst, isLast) => {
     let w = 1;
@@ -59,24 +55,60 @@ export function separate(left, right, rate, { workers, onProgress }) {
   const weightSum = new Float32Array(total);
 
   return new Promise((resolve, reject) => {
+    let next = 0;
     let done = 0;
     let failed = false;
-    const pool = jobs.map((job) => {
+    const inFlight = new Map();          // worker index -> fraction of its chunk
+
+    const report = () => {
+      let partial = 0;
+      inFlight.forEach((f) => { partial += f; });
+      onProgress?.({ fraction: Math.min(0.999, (done + partial) / chunks.length),
+                     done, of: chunks.length });
+    };
+
+    const stop = (err) => {
+      if (failed) return;
+      failed = true;
+      pool.forEach((w) => w.terminate());
+      reject(err);
+    };
+
+    const give = (worker, slot) => {
+      if (next >= chunks.length) { worker.terminate(); return; }
+      const chunk = chunks[next++];
+      worker.__chunk = chunk;
+      inFlight.set(slot, 0);
+      worker.postMessage({
+        msg: "SEGMENT",
+        index: chunk.index,
+        left: padded(left, chunk.start, chunk.end, overlap),
+        right: padded(right, chunk.start, chunk.end, overlap),
+      });
+    };
+
+    const pool = Array.from({ length: poolSize }, (_, slot) => {
       const worker = new Worker("worker.js");
       worker.onmessage = (event) => {
         const d = event.data;
-        if (d.msg === "LOADED") { onProgress?.({ loaded: true }); return; }
-        if (d.msg === "FAILED") {
-          if (!failed) { failed = true; pool.forEach((w) => w.terminate()); reject(new Error(d.error)); }
+        if (failed) return;
+
+        // Emitted by the WASM module itself, mid-inference.
+        if (d.msg === "PROGRESS_UPDATE") {
+          inFlight.set(slot, Math.max(0, Math.min(1, d.data ?? 0)));
+          report();
           return;
         }
+        if (d.msg === "LOADED") { report(); return; }
+        if (d.msg === "FAILED") { stop(new Error(d.error)); return; }
         if (d.msg !== "SEGMENT_DONE") return;
 
+        const chunk = worker.__chunk;
         const length = d.stems[0].length;
-        const isFirst = job.index === 0;
-        const isLast = job.index === jobs.length - 1;
+        const isFirst = chunk.index === 0;
+        const isLast = chunk.index === chunks.length - 1;
         for (let j = 0; j < length; j++) {
-          const global = job.start + j - overlap;
+          const global = chunk.start + j - overlap;
           if (global < 0 || global >= total) continue;
           const weight = weightAt(j, length, isFirst, isLast);
           if (weight <= 0) continue;
@@ -87,33 +119,31 @@ export function separate(left, right, rate, { workers, onProgress }) {
           weightSum[global] += weight;
         }
 
-        worker.terminate();
         done += 1;
-        onProgress?.({ done, of: jobs.length });
-        if (done !== jobs.length || failed) return;
+        inFlight.delete(slot);
+        report();
 
-        for (let i = 0; i < total; i++) {
-          const w = weightSum[i];
-          if (w <= 0) continue;
-          for (let s = 0; s < STEM_NAMES.length; s++) {
-            acc[s][0][i] /= w;
-            acc[s][1][i] /= w;
+        if (done === chunks.length) {
+          for (let i = 0; i < total; i++) {
+            const w = weightSum[i];
+            if (w <= 0) continue;
+            for (let s = 0; s < STEM_NAMES.length; s++) { acc[s][0][i] /= w; acc[s][1][i] /= w; }
           }
+          pool.forEach((w) => w.terminate());
+          const stems = {};
+          STEM_NAMES.forEach((name, s) => { stems[name] = acc[s]; });
+          resolve(stems);
+          return;
         }
-        const stems = {};
-        STEM_NAMES.forEach((name, s) => { stems[name] = acc[s]; });
-        resolve(stems);
+        give(worker, slot);
       };
-      worker.onerror = (e) => {
-        if (!failed) { failed = true; pool.forEach((w) => w.terminate()); reject(new Error(e.message)); }
-      };
-      worker.postMessage(
-        { msg: "SEGMENT", index: job.index, left: job.left, right: job.right },
-        [job.left.buffer, job.right.buffer],
-      );
+      worker.onerror = (e) => stop(new Error(e.message || "worker failed"));
       return worker;
     });
+
+    pool.forEach((worker, slot) => give(worker, slot));
+    report();
   });
 }
 
-export { STEM_NAMES };
+export { STEM_NAMES, CHUNK_SECONDS };
