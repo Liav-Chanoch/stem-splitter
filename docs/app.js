@@ -98,6 +98,37 @@ const touch = matchMedia("(hover: none)").matches;
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 let ctx, buffer, picked = new Set(), fromPrompt = false, mixer = null, result = null;
 let songName = "song";
+
+/* ---------- karaoke mode ----------
+ * Lives in step 1 rather than step 2, because the whole point is being able
+ * to set it before a track is loaded, and step 2 is disabled until one is.
+ */
+const remember = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+const recall = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+
+let karaoke = recall("karaoke") === "1";
+
+function paintKaraoke() {
+  const el = $("karaoke");
+  el.classList.toggle("on", karaoke);
+  el.setAttribute("aria-pressed", String(karaoke));
+  el.querySelector(".mode-state").textContent = karaoke ? "on" : "off";
+}
+
+function setKaraoke(on) {
+  karaoke = on;
+  remember("karaoke", on ? "1" : "0");
+  paintKaraoke();
+  if (!buffer) return;
+  // A track is already loaded, so apply it to the current selection too.
+  picked = on ? new Set(["vocals"]) : new Set();
+  fromPrompt = true; renderChips(); fromPrompt = false;
+  $("prompt").value = "";
+  $("reading").className = "reading";
+}
+
+$("karaoke").onclick = () => setKaraoke(!karaoke);
+paintKaraoke();
 const audio = () => (ctx ||= new (window.AudioContext || window.webkitAudioContext)());
 const THREADS = workerCount();
 
@@ -132,6 +163,8 @@ async function load(file) {
   $("run").disabled = false;
   estimate();
   drawWave();
+  // Honour a karaoke choice made before the track existed.
+  if (karaoke) picked = new Set(["vocals"]);
   renderChips();
   $("step2").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -186,7 +219,11 @@ function renderChips() {
     el.onclick = () => {
       picked.has(name) ? picked.delete(name) : picked.add(name);
       el.classList.toggle("on");
-      if (!fromPrompt) { $("prompt").value = ""; $("reading").className = "reading"; }
+      if (!fromPrompt) {
+        $("prompt").value = ""; $("reading").className = "reading";
+        // Hand-picking means this is no longer the karaoke selection.
+        if (karaoke) { karaoke = false; remember("karaoke", "0"); paintKaraoke(); }
+      }
       hint();
     };
     $("stems").appendChild(el);
@@ -295,7 +332,9 @@ function finished(stems, seconds) {
   }
   $("run").disabled = false;
   $("status").className = "status";
-  $("status").textContent = `Done in ${fmt(seconds)}. Play them here, or save the ones you want.`;
+  $("status").textContent = karaoke
+    ? `Karaoke ready in ${fmt(seconds)}. Press play, or save it — the other stems are muted below.`
+    : `Done in ${fmt(seconds)}. Play them here, or save the ones you want.`;
   renderResults();
 }
 
@@ -321,8 +360,14 @@ function renderResults() {
     // The picked pair overlaps the stems, so it starts muted: unmute one on
     // its own to hear exactly what gets saved.
     const overlaps = name.includes("+") || name.startsWith("without-");
-    nm.innerHTML = `${label(name)}${overlaps ? "<small>your selection</small>"
-      : name === "residual" ? "<small>leftovers</small>" : ""}`;
+    const isKaraoke = karaoke && name === "without-vocals";
+    // In karaoke mode the instrumental is the thing you came for, so it is the
+    // one left playing and everything else starts out of the way.
+    const display = isKaraoke ? "karaoke" : label(name);
+    const sub = isKaraoke ? "the music, no vocals"
+      : overlaps ? "your selection" : name === "residual" ? "leftovers" : "";
+    const fileName = isKaraoke ? `${songName} - karaoke` : name;
+    nm.innerHTML = `${display}${sub ? `<small>${sub}</small>` : ""}`;
     const mute = document.createElement("button"); mute.className = "tog"; mute.textContent = "mute";
     const solo = document.createElement("button"); solo.className = "tog"; solo.textContent = "solo";
     const save = document.createElement("button"); save.className = "tog save"; save.textContent = "save";
@@ -333,8 +378,9 @@ function renderResults() {
     const buf = audio().createBuffer(2, result.n, result.rate);
     buf.copyToChannel(chans[0], 0); buf.copyToChannel(chans[1], 1);
     const gain = audio().createGain(); gain.connect(audio().destination);
-    const track = { name, buf, gain, vol, muted: overlaps, soloed: false, chans };
-    if (overlaps) mute.classList.add("on");
+    const startMuted = karaoke ? !isKaraoke : overlaps;
+    const track = { name: display, buf, gain, vol, muted: startMuted, soloed: false, chans };
+    if (startMuted) mute.classList.add("on");
     mute.onclick = () => {
       track.muted = !track.muted;
       mute.classList.toggle("on", track.muted);
@@ -349,7 +395,7 @@ function renderResults() {
       gains();
     };
     vol.oninput = gains;
-    save.onclick = () => download(name, chans);
+    save.onclick = () => download(fileName, chans);
     mixer.tracks.push(track);
   });
 
@@ -384,7 +430,7 @@ function renderResults() {
       const cut = -20 * Math.log10(trim);      // a positive number of dB removed
       if (cut >= 0.1) note = `, turned down ${cut.toFixed(1)} dB so it would not clip`;
     }
-    download(`${songName} - mix`, out);
+    download(`${songName} - ${karaoke ? "karaoke" : "mix"}`, out);
     $("status").className = "status";
     $("status").textContent =
       `Saved your mix: ${live.map((t) => label(t.name)).join(", ")}${note}.`;

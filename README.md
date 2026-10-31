@@ -10,6 +10,9 @@ No server, no account, no upload: the page does the work.
 
 ## What it does
 
+- **Karaoke.** One toggle in step one, settable before a track is loaded and
+  remembered between visits. Separates the vocals out, leaves the instrumental
+  playing on its own, and saves it as `<song> - karaoke.wav`.
 - **Say it in words.** "take out the vocals", "just the bass", "instrumental".
   The sentence sets the controls and shows what it understood before running,
   so a misreading is visible rather than silent.
